@@ -1,0 +1,10 @@
+python-binance
+stable-baselines3
+gymnasium
+pandas
+numpy
+yfinance
+loguru
+python-dotenv
+pyyaml
+torch

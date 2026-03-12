@@ -1,0 +1,71 @@
+data:
+  # ── Data Source ────────────────────────────────────────
+  # Options: "csv" | "yfinance" | "binance"
+  source: "yfinance"
+
+  timeframe:     "1d"
+  lookback_days: 365
+  train_split:   0.8
+  symbol:        "GOLD"
+
+  # ── CSV (used when source: "csv") ─────────────────────
+  csv_path: "data/gold_clean_data/XAU_1d_data_clean.csv"
+
+  # ── yfinance (used when source: "yfinance") ───────────
+  yfinance_ticker: "GC=F"
+
+  # ── Binance (used when source: "binance") ─────────────
+  # symbol above is reused (e.g. "BTCUSDT", "ETHUSDT")
+
+
+indicators:
+  ema_periods:
+    - 20
+    - 50
+    - 200
+  rsi_periods:
+    - 7
+    - 14
+  macd:
+    fast:   12
+    slow:   26
+    signal: 9
+  bollinger:
+    period:  20
+    std_dev: 2
+  atr_period: 14
+
+
+ai:
+  algorithm:            "PPO"
+  training_timesteps:   100000
+  learning_rate:        0.0003
+  model_save_path:      "models/"
+  confidence_threshold: 55.0
+  training_runs:        1
+
+
+broker:
+  mode:            "paper"
+  initial_capital: 10000
+  symbol:          "BTCUSDT"
+
+
+risk:
+  position_sizing:    "kelly"
+  max_position_pct:   0.95
+  min_position_pct:   0.01
+  kelly_fraction:     0.25
+  fixed_dollar_risk:  20
+  stop_loss_pct:      0.01
+  take_profit_pct:    0.03
+  trailing_stop:      false
+  trailing_pct:       0.07
+  max_daily_loss_pct: 0.03
+  max_drawdown_pct:   0.10
+  max_open_trades:    1
+
+
+scheduler:
+  run_hour:   9
+  run_minute: 0
