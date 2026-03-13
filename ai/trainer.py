@@ -15,9 +15,10 @@ class AgentTrainer:
     Single responsibility: orchestrate the
     train → evaluate → save pipeline cleanly.
 
-    Now supports multi-run training:
-    Trains N times, keeps the best model
-    based on win rate on the test set.
+    Now supports:
+    - Multi-run training: trains N times, keeps best win rate
+    - Resume training: loads existing model and continues
+      training instead of starting from scratch
     """
 
     def __init__(self, config: dict):
@@ -29,13 +30,14 @@ class AgentTrainer:
         normalized_df: pd.DataFrame,
         raw_prices:    pd.Series,
         timesteps:     int = None,
+        resume:        bool = None,   # None = read from config
     ) -> dict:
         """
-        Full pipeline with multi-run support.
+        Full pipeline with multi-run + resume support.
 
-        If config has training_runs > 1, trains
-        that many times and keeps the best model
-        (highest win rate on test set).
+        resume=True  → load saved model and continue training
+        resume=False → always train from scratch
+        resume=None  → reads ai.resume_training from config
         """
 
         # ── Step 1: Split data ─────────────────────
@@ -61,7 +63,20 @@ class AgentTrainer:
         best_path    = os.path.join(save_path, "PPO_trading_bot.zip")
         temp_path    = os.path.join(save_path, "PPO_temp_run.zip")
 
-        logger.info(f"\n🔁 Multi-run training: {n_runs} runs | keeping best win rate")
+        # Resolve resume flag
+        if resume is None:
+            resume = self.config["ai"].get("resume_training", False)
+
+        # Check if a saved model actually exists to resume from
+        can_resume = resume and os.path.exists(best_path)
+
+        if resume and can_resume:
+            logger.info(f"\n⏩ RESUME MODE — continuing from: {best_path}")
+        elif resume and not can_resume:
+            logger.warning("⚠️  Resume requested but no saved model found — training from scratch")
+        else:
+            logger.info(f"\n🔁 FRESH training: {n_runs} runs | keeping best win rate")
+
         logger.info("="*55)
 
         best_win_rate  = -1.0
@@ -73,14 +88,21 @@ class AgentTrainer:
             logger.info(f"\n🏃 Run {run}/{n_runs}")
             logger.info("-"*40)
 
-            # Build fresh agent each run
+            # ── Build agent ────────────────────────
             agent = TradingAgent(self.config)
             agent.build(
                 normalized_df = train_df,
                 raw_prices    = train_prices,
             )
 
-            # Baseline before training
+            # ── Resume: load existing weights ──────
+            if can_resume:
+                logger.info(f"   📂 Loading saved model to resume...")
+                agent.load("PPO_trading_bot")
+                agent.model.set_env(agent.env)   # reattach environment
+                logger.success(f"   ✅ Resuming from saved checkpoint")
+
+            # ── Baseline before training (run 1 only) ──
             if run == 1:
                 logger.info("📊 Evaluating BEFORE training...")
                 before = agent.run_episode(test_df, test_prices)
@@ -90,11 +112,11 @@ class AgentTrainer:
                 logger.info(f"   Win rate: {before['win_rate']:.1f}%")
                 best_before = before
 
-            # Train
+            # ── Train ──────────────────────────────
             agent.train(total_timesteps=steps)
 
-            # Evaluate after training
-            after = agent.run_episode(test_df, test_prices)
+            # ── Evaluate ───────────────────────────
+            after    = agent.run_episode(test_df, test_prices)
             win_rate = after["win_rate"]
 
             logger.info(
@@ -113,27 +135,23 @@ class AgentTrainer:
                 "trades":    after["total_trades"],
             })
 
-            # Save if this is the best run so far
+            # ── Save best model ────────────────────
             if win_rate > best_win_rate:
                 best_win_rate = win_rate
                 best_after    = after
 
-                # Save this model as best
                 agent.model.save(temp_path.replace(".zip", ""))
                 if os.path.exists(temp_path):
                     shutil.copy(temp_path, best_path)
                 else:
-                    # stable-baselines3 saves without .zip sometimes
                     src = temp_path.replace(".zip", "") + ".zip"
                     if os.path.exists(src):
                         shutil.copy(src, best_path)
 
                 logger.info(f"   💾 New best model saved! Win rate: {best_win_rate:.1f}%")
 
-        # ── Print multi-run summary ────────────────
+        # ── Print summaries ────────────────────────
         self._print_run_summary(run_results)
-
-        # ── Print before vs best after ─────────────
         report = self._build_report(best_before, best_after)
         self._print_report(report)
 
@@ -143,16 +161,15 @@ class AgentTrainer:
         )
 
         return {
-            "agent":       None,        # best model is on disk
-            "before":      best_before,
-            "after":       best_after,
-            "report":      report,
-            "run_results": run_results,
+            "agent":         None,
+            "before":        best_before,
+            "after":         best_after,
+            "report":        report,
+            "run_results":   run_results,
             "best_win_rate": best_win_rate,
         }
 
     def _print_run_summary(self, run_results: list):
-        """Print a summary table of all runs."""
         logger.info("\n" + "="*65)
         logger.info("📊 MULTI-RUN SUMMARY")
         logger.info("="*65)
