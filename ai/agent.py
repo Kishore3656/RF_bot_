@@ -101,7 +101,7 @@ class TradingAgent:
         #   Hidden layer 3: 128 neurons  (extra depth for pattern recognition)
         #   Output layer: 4 neurons (hold/long/short/close)
         policy_kwargs = dict(
-            net_arch = [256, 256, 128]
+            net_arch = [64, 64]
         )
 
         # ── Step 3: Create the model ───────────────
@@ -123,9 +123,9 @@ class TradingAgent:
             tensorboard_log = "logs/tensorboard/",
             **({
                 "ent_coef":   0.01,   # exploration bonus (PPO/A2C only)
-                "n_steps":    2048,
-                "batch_size": 64,
-                "n_epochs":   10,
+                "n_steps":    512,
+                "batch_size": 32,
+                "n_epochs":   5,
             } if self.algorithm in ("PPO", "A2C") else {}),
         )
 
