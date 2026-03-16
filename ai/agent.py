@@ -94,14 +94,14 @@ class TradingAgent:
         ])
 
         # ── Step 2: Define the neural network architecture
-        # policy_kwargs controls the shape of the neural net
-        # net_arch = [256, 256] means:
-        #   Input layer (29 neurons — our observation size)
+        # net_arch = [256, 256, 128]:
+        #   Input layer (34 neurons — observation size with new features)
         #   Hidden layer 1: 256 neurons
         #   Hidden layer 2: 256 neurons
-        #   Output layer (3 neurons — hold/buy/sell)
+        #   Hidden layer 3: 128 neurons  (extra depth for pattern recognition)
+        #   Output layer: 4 neurons (hold/long/short/close)
         policy_kwargs = dict(
-            net_arch = [256, 256]
+            net_arch = [256, 256, 128]
         )
 
         # ── Step 3: Create the model ───────────────
@@ -110,13 +110,22 @@ class TradingAgent:
         # PPO and A2C use "MlpPolicy" (Multi-Layer Perceptron)
         # = a standard feedforward neural network
         # Perfect for our flat observation vector
+        # entropy_coef=0.01 maintains exploration, prevents premature convergence
+        # n_steps=2048 accumulates more experience per update
+        # batch_size=64, n_epochs=10 are PPO standard best practices
         self.model = AlgorithmClass(
-            policy        = "MlpPolicy",
-            env           = self.env,
-            learning_rate = self.lr,
-            policy_kwargs = policy_kwargs,
-            verbose       = 0,       # 0=quiet, 1=progress, 2=debug
+            policy          = "MlpPolicy",
+            env             = self.env,
+            learning_rate   = self.lr,
+            policy_kwargs   = policy_kwargs,
+            verbose         = 0,
             tensorboard_log = "logs/tensorboard/",
+            **({
+                "ent_coef":   0.01,   # exploration bonus (PPO/A2C only)
+                "n_steps":    2048,
+                "batch_size": 64,
+                "n_epochs":   10,
+            } if self.algorithm in ("PPO", "A2C") else {}),
         )
 
         # Count trainable parameters

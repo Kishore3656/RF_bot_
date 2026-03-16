@@ -141,7 +141,7 @@ class TradingEnvironment(gym.Env):
         self.portfolio_value = self._calculate_portfolio_value(next_price)
         self.portfolio_history.append(self.portfolio_value)
 
-        reward     = self._calculate_reward(trade_info)
+        reward     = self._calculate_reward(trade_info, action, current_price)
         terminated = self.current_step >= self.n_steps - 1
         truncated  = False
 
@@ -386,13 +386,15 @@ class TradingEnvironment(gym.Env):
         else:
             return self.cash
 
-    def _calculate_reward(self, trade_info: dict) -> float:
+    def _calculate_reward(self, trade_info: dict, action: int, current_price: float) -> float:
         """Use our carefully designed RewardFunction."""
         reward, breakdown = self.reward_fn.calculate(
-            prev_value  = self.prev_portfolio_value,
-            curr_value  = self.portfolio_value,
-            trade_cost  = trade_info["trade_cost"],
-            trade_taken = trade_info["action_taken"] != "hold",
+            prev_value    = self.prev_portfolio_value,
+            curr_value    = self.portfolio_value,
+            trade_cost    = trade_info["trade_cost"],
+            trade_taken   = trade_info["action_taken"] != "hold",
+            action        = action,
+            current_price = current_price,
         )
 
         self.prev_portfolio_value  = self.portfolio_value

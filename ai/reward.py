@@ -22,12 +22,12 @@ class RewardFunction:
     """
 
     def __init__(self, config: dict):
-        self.portfolio_weight  = 1.0    # main signal
-        self.drawdown_weight   = 0.5    # drawdown penalty
-        self.cost_weight       = 0.1    # transaction cost penalty
-        self.sharpe_weight     = 0.3    # consistency bonus
-        self.win_weight        = 0.4    # ← NEW: reward winning trades
-        self.hold_penalty = 0.005  # much softer nudge
+        self.portfolio_weight  = 0.8    # main signal (reduced slightly)
+        self.drawdown_weight   = 0.6    # drawdown penalty (stronger protection)
+        self.cost_weight       = 0.15   # transaction cost penalty (discourage overtrading)
+        self.sharpe_weight     = 0.4    # consistency bonus (increased)
+        self.win_weight        = 0.8    # directly reward winning trades (doubled)
+        self.hold_penalty = 0.003  # soft nudge
         self.max_hold_steps = 20
         self.initial_capital   = config["broker"]["initial_capital"]
 
@@ -135,10 +135,12 @@ class RewardFunction:
 
             if trade_pnl > 0:
                 # Won — bonus proportional to gain
-                reward_trade = self.win_weight * trade_pnl * 4
+                reward_trade = self.win_weight * trade_pnl * 6
             else:
-                # Lost — penalty proportional to loss (lighter than win bonus)
-                reward_trade = self.win_weight * trade_pnl * 2
+                # Lost — penalty proportional to loss
+                # Asymmetric: wins rewarded 3x more than losses punished
+                # teaches the bot to seek high-conviction entries
+                reward_trade = self.win_weight * trade_pnl * 3
 
             self.in_trade   = False
             self.entry_price = None

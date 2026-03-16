@@ -58,6 +58,7 @@ class IndicatorEngine:
         df = self._add_bollinger_bands(df)
         df = self._add_atr(df)
         df = self._add_volume_indicators(df)
+        df = self._add_momentum_indicators(df)
 
         # ── Drop rows where indicators are NaN ──
         # (first N rows are always NaN until
@@ -320,4 +321,61 @@ class IndicatorEngine:
         df["obv"] = obv
 
         logger.debug("   ✓ Volume indicators (SMA, ratio, OBV)")
+        return df
+
+    def _add_momentum_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add momentum-based indicators:
+        - Stochastic %K/%D  → overbought/oversold with trend context
+        - Williams %R       → momentum divergence signal
+        - ROC (14)          → rate of change, trend acceleration
+        - CCI (20)          → commodity channel index, cycle timing
+        - candle_body_ratio → bullish/bearish candle strength
+
+        These complement RSI/MACD and improve entry timing.
+        """
+        # ── Stochastic Oscillator %K and %D ──────
+        # %K = (Close - LowestLow) / (HighestHigh - LowestLow) × 100
+        # %D = 3-period SMA of %K (signal line)
+        period = 14
+        lowest_low   = df["low"].rolling(window=period).min()
+        highest_high = df["high"].rolling(window=period).max()
+        denom = (highest_high - lowest_low).replace(0, np.finfo(float).eps)
+        df["stoch_k"] = (df["close"] - lowest_low) / denom * 100
+        df["stoch_d"] = df["stoch_k"].rolling(window=3).mean()
+
+        # ── Williams %R ───────────────────────────
+        # Range: -100 to 0  (we normalize to 0-1 in normalizer)
+        # Near 0 = overbought, near -100 = oversold
+        df["williams_r"] = (
+            (highest_high - df["close"]) / denom * -100
+        )
+
+        # ── Rate of Change (ROC) ──────────────────
+        # % change over N periods — measures trend momentum
+        roc_period = 14
+        df["roc_14"] = (
+            (df["close"] - df["close"].shift(roc_period))
+            / df["close"].shift(roc_period).replace(0, np.finfo(float).eps)
+            * 100
+        )
+
+        # ── Commodity Channel Index (CCI) ─────────
+        # Measures distance from statistical mean
+        # >100 = overbought, <-100 = oversold
+        cci_period = 20
+        typical_price = (df["high"] + df["low"] + df["close"]) / 3
+        tp_sma = typical_price.rolling(window=cci_period).mean()
+        tp_mad = typical_price.rolling(window=cci_period).apply(
+            lambda x: np.mean(np.abs(x - x.mean())), raw=True
+        )
+        df["cci_20"] = (typical_price - tp_sma) / (0.015 * tp_mad.replace(0, np.finfo(float).eps))
+
+        # ── Candlestick Body Ratio ────────────────
+        # (close - open) / (high - low) → [-1, 1]
+        # +1 = full bullish candle, -1 = full bearish candle
+        candle_range = (df["high"] - df["low"]).replace(0, np.finfo(float).eps)
+        df["candle_body"] = (df["close"] - df["open"]) / candle_range
+
+        logger.debug("   ✓ Momentum indicators (Stoch, Williams %R, ROC, CCI, candle body)")
         return df

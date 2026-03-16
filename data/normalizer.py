@@ -31,6 +31,10 @@ class DataNormalizer:
             "ema_cross":   (0, 1),
             "volume_ratio":(0, 5),   # rarely goes above 5x
             "atr_pct":     (0, 10),  # rarely above 10%
+            "stoch_k":     (0, 100),
+            "stoch_d":     (0, 100),
+            "williams_r":  (-100, 0),  # range: -100 (oversold) to 0 (overbought)
+            "candle_body": (-1, 1),    # -1=full bearish, +1=full bullish
         }
 
         # Rolling window columns (scale relative to recent history)
@@ -49,6 +53,8 @@ class DataNormalizer:
             "volume",
             "volume_sma_20",
             "obv",
+            "roc_14",   # can be large +/- percentage
+            "cci_20",   # range ±200+ in practice
         ]
 
         # Columns to DROP before feeding to neural network

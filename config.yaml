@@ -1,7 +1,7 @@
 data:
   # ── Data Source ────────────────────────────────────────
   # Options: "csv" | "yfinance" | "binance"
-  source: "yfinance"
+  source: "csv"
 
   timeframe:     "1d"
   lookback_days: 365
@@ -38,11 +38,11 @@ indicators:
 
 ai:
   algorithm:            "PPO"
-  training_timesteps:   100000
-  learning_rate:        0.0003
+  training_timesteps:   1000000   # doubled: more training = better policy
+  learning_rate:        0.0002    # slightly lower: more stable convergence
   model_save_path:      "models/"
-  confidence_threshold: 55.0
-  training_runs:        1
+  confidence_threshold: 60.0     # raised: only act on high-confidence signals
+  training_runs:        5         # more runs = better chance of finding good policy
 
 
 broker:
@@ -57,12 +57,12 @@ risk:
   min_position_pct:   0.01
   kelly_fraction:     0.25
   fixed_dollar_risk:  20
-  stop_loss_pct:      0.01
-  take_profit_pct:    0.03
-  trailing_stop:      false
-  trailing_pct:       0.07
+  stop_loss_pct:      0.012    # tighter stop: cut losses faster
+  take_profit_pct:    0.05     # wider target: let winners run more
+  trailing_stop:      true     # lock in profits on strong moves
+  trailing_pct:       0.05     # trail by 5% from peak
   max_daily_loss_pct: 0.03
-  max_drawdown_pct:   0.10
+  max_drawdown_pct:   0.15
   max_open_trades:    1
 
 
