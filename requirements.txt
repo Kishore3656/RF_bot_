@@ -8,3 +8,5 @@ loguru
 python-dotenv
 pyyaml
 torch
+fastapi
+uvicorn
