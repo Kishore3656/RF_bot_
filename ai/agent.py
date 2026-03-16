@@ -119,6 +119,7 @@ class TradingAgent:
             learning_rate   = self.lr,
             policy_kwargs   = policy_kwargs,
             verbose         = 0,
+            device          = "cpu",   # MlpPolicy runs faster on CPU than GPU
             tensorboard_log = "logs/tensorboard/",
             **({
                 "ent_coef":   0.01,   # exploration bonus (PPO/A2C only)

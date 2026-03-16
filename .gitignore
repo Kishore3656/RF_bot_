@@ -7,3 +7,5 @@ __pycache__/
 scheduler/state.json
 *.zip
 data/gold_clean_data
+.gitignore
+.claude
