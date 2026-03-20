@@ -38,11 +38,14 @@ indicators:
 
 ai:
   algorithm:            "PPO"
-  training_timesteps:   1000000   # doubled: more training = better policy
+  training_timesteps:   500000    # more steps = better convergence
   learning_rate:        0.0002    # slightly lower: more stable convergence
   model_save_path:      "models/"
   confidence_threshold: 60.0     # raised: only act on high-confidence signals
-  training_runs:        5         # more runs = better chance of finding good policy
+  training_runs:        6         # more runs, keep best composite score
+  resume_training:      True    # set true after first run to continue from saved model
+  max_position_pct:     0.30     # bot risks only 30% of capital per trade during training
+  random_seed:          42        # fixed seed for reproducibility
 
 
 broker:

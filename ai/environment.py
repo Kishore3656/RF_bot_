@@ -47,6 +47,8 @@ class TradingEnvironment(gym.Env):
             if c not in ["symbol", "asset_type"]
         ]
         self.n_features   = len(self.feature_cols)
+        # Precompute as numpy array to avoid per-step pandas overhead
+        self._feature_array = self.df[self.feature_cols].values.astype(np.float32)
 
         # ── Raw prices (bot's wallet) ──────────────
         if raw_prices is not None:
@@ -185,9 +187,7 @@ class TradingEnvironment(gym.Env):
 
     def _get_observation(self) -> np.ndarray:
         """Normalized observation for the neural network."""
-        market_state    = self.df[self.feature_cols].iloc[
-            self.current_step
-        ].values.astype(np.float32)
+        market_state    = self._feature_array[self.current_step]
 
         portfolio_state = self._get_portfolio_state()
 

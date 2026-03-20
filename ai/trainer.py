@@ -4,6 +4,7 @@ import os
 import shutil
 import pandas as pd
 import numpy as np
+import random
 from loguru import logger
 from .agent import TradingAgent
 
@@ -79,7 +80,8 @@ class AgentTrainer:
 
         logger.info("="*55)
 
-        best_win_rate  = -1.0
+        base_seed      = self.config.get("ai", {}).get("random_seed", None)
+        best_score     = -999.0
         best_after     = None
         best_before    = None
         run_results    = []
@@ -87,6 +89,20 @@ class AgentTrainer:
         for run in range(1, n_runs + 1):
             logger.info(f"\n🏃 Run {run}/{n_runs}")
             logger.info("-"*40)
+
+            # ── Set seeds for this run ──────────────
+            # Each run gets a different seed offset so we explore different
+            # initialisations while still being reproducible across re-runs.
+            if base_seed is not None:
+                run_seed = base_seed + (run - 1) * 100
+                np.random.seed(run_seed)
+                random.seed(run_seed)
+                try:
+                    import torch
+                    torch.manual_seed(run_seed)
+                except ImportError:
+                    pass
+                logger.info(f"   🎲 Seed: {run_seed}")
 
             # ── Build agent ────────────────────────
             agent = TradingAgent(self.config)
@@ -136,9 +152,17 @@ class AgentTrainer:
             })
 
             # ── Save best model ────────────────────
-            if win_rate > best_win_rate:
-                best_win_rate = win_rate
-                best_after    = after
+            # Composite score: reward return and win rate, penalise drawdown.
+            # This prevents selecting a high-win-rate model that over-trades
+            # or takes catastrophic losses.
+            composite = (
+                after["total_return"] * 0.5
+                + win_rate            * 0.3
+                - after["max_drawdown"] * 0.2
+            )
+            if composite > best_score:
+                best_score = composite
+                best_after  = after
 
                 agent.model.save(temp_path.replace(".zip", ""))
                 if os.path.exists(temp_path):
@@ -148,7 +172,7 @@ class AgentTrainer:
                     if os.path.exists(src):
                         shutil.copy(src, best_path)
 
-                logger.info(f"   💾 New best model saved! Win rate: {best_win_rate:.1f}%")
+                logger.info(f"   💾 New best model saved! Score: {best_score:.2f} (return={after['total_return']:+.1f}% wr={win_rate:.1f}% dd={after['max_drawdown']:.1f}%)")
 
         # ── Print summaries ────────────────────────
         self._print_run_summary(run_results)
@@ -156,17 +180,17 @@ class AgentTrainer:
         self._print_report(report)
 
         logger.info(
-            f"\n🏆 Best run win rate: {best_win_rate:.1f}% "
+            f"\n🏆 Best composite score: {best_score:.2f} "
             f"| Model saved to: {best_path}"
         )
 
         return {
-            "agent":         None,
-            "before":        best_before,
-            "after":         best_after,
-            "report":        report,
-            "run_results":   run_results,
-            "best_win_rate": best_win_rate,
+            "agent":        None,
+            "before":       best_before,
+            "after":        best_after,
+            "report":       report,
+            "run_results":  run_results,
+            "best_score":   best_score,
         }
 
     def _print_run_summary(self, run_results: list):

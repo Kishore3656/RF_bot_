@@ -6,13 +6,12 @@ import sys
 import yaml
 import threading
 import numpy as np
-import pandas as pd
 from datetime import datetime
 from loguru import logger
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional
 
 # ── Add project root to path ───────────────────
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +20,7 @@ from data.fetcher     import MarketDataFetcher
 from data.indicators  import IndicatorEngine
 from data.normalizer  import DataNormalizer
 from ai.inference     import InferenceEngine
+from risk.stop_loss   import StopLossManager
 
 # ── Load config ────────────────────────────────
 with open("config.yaml") as f:
@@ -41,8 +41,10 @@ class BotState:
     def __init__(self):
         self.running         = False
         self.mode            = config["broker"].get("mode", "paper")
-        self.portfolio_value = config["broker"]["initial_capital"]
         self.initial_capital = config["broker"]["initial_capital"]
+        self.portfolio_value = self.initial_capital
+        self.cash            = self.initial_capital   # tracks liquid cash
+        self.position_units  = 0.0                   # units held (+long, -short)
         self.position        = None
         self.entry_price     = None
         self.total_trades    = 0
@@ -53,6 +55,7 @@ class BotState:
         self.last_tick       = None
         self.engine          = None
         self.thread          = None
+        self.sl_manager      = StopLossManager(config)
 
 state = BotState()
 
@@ -69,16 +72,75 @@ def load_engine():
     return state.engine
 
 def fetch_latest_data():
-    """Fetch and normalize latest market data."""
+    """Fetch and normalize latest market data, routing by config source."""
     fetcher    = MarketDataFetcher(config)
     ind_engine = IndicatorEngine(config)
     normalizer = DataNormalizer(config)
 
-    raw_df, raw_prices = fetcher.fetch()
-    df_with_indicators = ind_engine.compute_all(raw_df)
-    normalized_df      = normalizer.normalize(df_with_indicators)
+    data_cfg = config["data"]
+    source   = data_cfg.get("source", "csv").lower()
+    symbol   = data_cfg.get("symbol", "GOLD")
 
-    return normalized_df, raw_prices
+    if source == "csv":
+        csv_path = data_cfg.get("csv_path")
+        raw = fetcher.fetch_csv(csv_path, symbol=symbol)
+    elif source == "yfinance":
+        ticker = data_cfg.get("yfinance_ticker", symbol)
+        raw = fetcher.fetch_yfinance(ticker, symbol=symbol)
+    elif source == "binance":
+        raw = fetcher.fetch_binance(
+            symbol   = symbol,
+            interval = data_cfg.get("timeframe", "1d"),
+            limit    = data_cfg.get("lookback_days", 365),
+        )
+    else:
+        raise ValueError(f"Unknown data source: '{source}'")
+
+    enriched   = ind_engine.compute_all(raw)
+    raw_prices = raw["close"].reindex(enriched.index)
+    normalized = normalizer.normalize(enriched)
+    raw_prices = raw_prices.reindex(normalized.index).dropna()
+    normalized = normalized.loc[raw_prices.index]
+
+    return normalized, raw_prices
+
+
+def _build_portfolio_obs(current_price: float) -> np.ndarray:
+    """
+    Build the 6-element portfolio state matching TradingEnvironment._get_portfolio_state().
+    Must be appended to the market observation before calling predict().
+    """
+    ic = state.initial_capital
+    pv = state.portfolio_value
+
+    cash_ratio     = min(state.cash / ic, 1.0)
+    pos_value      = abs(state.position_units) * current_price
+    position_ratio = min(pos_value / ic, 1.0)
+
+    if state.position is not None and state.entry_price:
+        if state.position == "LONG":
+            upct = (current_price - state.entry_price) / state.entry_price
+        else:
+            upct = (state.entry_price - current_price) / state.entry_price
+        unrealized_norm = float(np.clip(upct + 0.5, 0.0, 1.0))
+    else:
+        unrealized_norm = 0.5
+
+    portfolio_ratio = min(pv / (ic * 2), 1.0)
+
+    if state.position == "LONG":
+        pos_dir = 1.0
+    elif state.position == "SHORT":
+        pos_dir = 0.0
+    else:
+        pos_dir = 0.5
+
+    has_pos = 1.0 if state.position is not None else 0.0
+
+    return np.array(
+        [cash_ratio, position_ratio, unrealized_norm, portfolio_ratio, pos_dir, has_pos],
+        dtype=np.float32,
+    )
 
 def run_bot_loop():
     """Background thread — runs one tick every 60s."""
@@ -90,9 +152,12 @@ def run_bot_loop():
             engine = load_engine()
             normalized_df, raw_prices = fetch_latest_data()
 
-            observation   = normalized_df.iloc[-1].values.astype(np.float32)
+            market_obs    = normalized_df.iloc[-1].values.astype(np.float32)
             current_price = float(raw_prices.iloc[-1])
             state.last_price = current_price
+
+            portfolio_obs = _build_portfolio_obs(current_price)
+            observation   = np.concatenate([market_obs, portfolio_obs]).astype(np.float32)
 
             result = engine.predict(
                 observation     = observation,
@@ -103,6 +168,16 @@ def run_bot_loop():
             confidence = result["confidence"]
             state.last_signal = result
             state.last_tick   = datetime.now().isoformat()
+
+            # Check stop loss / take profit before executing
+            if state.position is not None:
+                sl_result = state.sl_manager.check(current_price)
+                if sl_result["should_exit"]:
+                    action = 3
+                    logger.warning(
+                        f"⚠️ Risk override: {sl_result['reason']} | "
+                        f"P&L: {sl_result['pnl_pct']:+.2f}%"
+                    )
 
             # Execute in paper mode
             if state.mode == "paper":
@@ -122,44 +197,76 @@ def run_bot_loop():
     logger.info("🛑 Bot loop stopped")
 
 def _execute_paper(action: int, price: float):
-    """Paper trading execution."""
+    """Paper trading execution — mirrors TradingEnvironment logic."""
+    tc = 0.001   # transaction cost fraction
+
     if action == 1 and state.position is None:
-        state.position    = "LONG"
-        state.entry_price = price
+        # Open LONG: spend cash to buy units
+        buy_value          = state.cash * config["risk"].get("max_position_pct", 0.95)
+        cost               = buy_value * tc
+        units              = (buy_value - cost) / price
+        state.cash        -= buy_value
+        state.position_units = units
+        state.position     = "LONG"
+        state.entry_price  = price
         state.total_trades += 1
+        state.sl_manager.open_trade(price, "long")
 
     elif action == 2 and state.position is None:
-        state.position    = "SHORT"
-        state.entry_price = price
+        # Open SHORT: cash unchanged, negative units
+        short_value        = state.cash * config["risk"].get("max_position_pct", 0.95)
+        cost               = short_value * tc
+        units              = (short_value - cost) / price
+        state.position_units = -units
+        state.position     = "SHORT"
+        state.entry_price  = price
         state.total_trades += 1
+        state.sl_manager.open_trade(price, "short")
 
     elif action == 3 and state.position is not None:
         if state.entry_price:
             if state.position == "LONG":
-                pnl_pct = (price - state.entry_price) / state.entry_price * 100
+                sale_value   = state.position_units * price
+                cost         = sale_value * tc
+                realized_pnl = sale_value - (state.position_units * state.entry_price) - cost
+                state.cash  += sale_value - cost
+                pnl_pct      = (price - state.entry_price) / state.entry_price * 100
             else:
-                pnl_pct = (state.entry_price - price) / state.entry_price * 100
+                units_owed   = abs(state.position_units)
+                buyback      = units_owed * price
+                cost         = buyback * tc
+                realized_pnl = (units_owed * state.entry_price) - buyback - cost
+                state.cash  += realized_pnl
+                pnl_pct      = (state.entry_price - price) / state.entry_price * 100
 
-            pnl_dollar = state.portfolio_value * (pnl_pct / 100)
-            state.portfolio_value += pnl_dollar
-
+            state.portfolio_value = state.cash   # flat — all in cash now
             won = pnl_pct > 0
             if won:
                 state.winning_trades += 1
 
             state.trades.append({
-                "id":        state.total_trades,
-                "type":      state.position,
-                "entry":     round(state.entry_price, 2),
-                "exit":      round(price, 2),
-                "pnl_pct":   round(pnl_pct, 2),
-                "pnl_dollar": round(pnl_dollar, 2),
-                "won":       won,
-                "timestamp": datetime.now().isoformat(),
+                "id":         state.total_trades,
+                "type":       state.position,
+                "entry":      round(state.entry_price, 2),
+                "exit":       round(price, 2),
+                "pnl_pct":    round(pnl_pct, 2),
+                "pnl_dollar": round(realized_pnl, 2),
+                "won":        won,
+                "timestamp":  datetime.now().isoformat(),
             })
 
-        state.position    = None
-        state.entry_price = None
+        state.sl_manager.close_trade()
+        state.position       = None
+        state.entry_price    = None
+        state.position_units = 0.0
+
+    # Update portfolio value with mark-to-market
+    if state.position == "LONG":
+        state.portfolio_value = state.cash + (state.position_units * price)
+    elif state.position == "SHORT":
+        units_owed = abs(state.position_units)
+        short_pnl  = (state.entry_price - price) * units_owed
+        state.portfolio_value = state.cash + short_pnl
 
 # ── API Routes ──────────────────────────────────
 
@@ -202,9 +309,9 @@ def get_trades():
 def get_prices():
     """Return recent price data for chart."""
     try:
-        normalized_df, raw_prices = fetch_latest_data()
-        prices  = raw_prices.tail(60).tolist()
-        dates   = [str(d)[:10] for d in raw_prices.tail(60).index.tolist()]
+        _, raw_prices = fetch_latest_data()
+        prices = raw_prices.tail(60).tolist()
+        dates  = [str(d)[:10] for d in raw_prices.tail(60).index.tolist()]
         return {"prices": prices, "dates": dates}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -251,8 +358,10 @@ def predict_once():
         engine = load_engine()
         normalized_df, raw_prices = fetch_latest_data()
 
-        observation   = normalized_df.iloc[-1].values.astype(np.float32)
         current_price = float(raw_prices.iloc[-1])
+        market_obs    = normalized_df.iloc[-1].values.astype(np.float32)
+        portfolio_obs = _build_portfolio_obs(current_price)
+        observation   = np.concatenate([market_obs, portfolio_obs]).astype(np.float32)
 
         result = engine.predict(
             observation     = observation,
@@ -270,3 +379,8 @@ def predict_once():
 @app.get("/health")
 def health():
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
+
+@app.get("/")
+def serve_dashboard():
+    """Serve the trading dashboard."""
+    return FileResponse("dashboard.html")

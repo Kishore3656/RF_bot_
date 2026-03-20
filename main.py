@@ -4,7 +4,7 @@ import yaml
 from loguru import logger
 from data import MarketDataFetcher, IndicatorEngine, DataNormalizer
 from ai   import AgentTrainer, InferenceEngine
-from broker import BinanceBroker, PaperBroker
+from broker import BinanceBroker, PaperBroker   
 
 def load_config():
     with open("config.yaml", "r") as f:

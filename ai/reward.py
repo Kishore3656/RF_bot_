@@ -22,13 +22,12 @@ class RewardFunction:
     """
 
     def __init__(self, config: dict):
-        self.portfolio_weight  = 0.8    # main signal (reduced slightly)
-        self.drawdown_weight   = 0.6    # drawdown penalty (stronger protection)
-        self.cost_weight       = 0.15   # transaction cost penalty (discourage overtrading)
-        self.sharpe_weight     = 0.4    # consistency bonus (increased)
-        self.win_weight        = 0.8    # directly reward winning trades (doubled)
-        self.hold_penalty = 0.003  # soft nudge
-        self.max_hold_steps = 20
+        self.portfolio_weight  = 0.8    # main signal
+        self.drawdown_weight   = 0.6    # drawdown penalty
+        self.cost_weight       = 0.40   # higher cost penalty: strongly discourages overtrading
+        self.sharpe_weight     = 0.4    # consistency bonus
+        self.win_weight        = 0.8    # win/loss trade bonus
+        self.hold_penalty      = 0.001  # gentler nudge — don't rush into bad trades
         self.initial_capital   = config["broker"]["initial_capital"]
 
         # Rolling window of recent returns for Sharpe calc
@@ -38,12 +37,12 @@ class RewardFunction:
         # Track peak for drawdown
         self.peak_value        = self.initial_capital
 
-        # ── NEW: trade tracking ────────────────────
+        # trade tracking
         self.entry_price       = None     # price when trade opened
         self.entry_value       = None     # portfolio value when trade opened
         self.in_trade          = False    # are we currently in a position?
         self.hold_steps        = 0        # how many steps we've been holding
-        self.max_hold_steps    = 10       # after this many holds, start penalizing
+        self.max_hold_steps    = 25       # longer grace period before hold penalty fires
         self.consecutive_holds = 0        # how many HOLDs in a row
 
         logger.info("🏆 RewardFunction ready")
@@ -134,13 +133,12 @@ class RewardFunction:
             trade_pnl = (curr_value - self.entry_value) / self.initial_capital
 
             if trade_pnl > 0:
-                # Won — bonus proportional to gain
-                reward_trade = self.win_weight * trade_pnl * 6
+                # Won — bonus proportional to gain (reduced multiplier)
+                reward_trade = self.win_weight * trade_pnl * 3
             else:
                 # Lost — penalty proportional to loss
-                # Asymmetric: wins rewarded 3x more than losses punished
-                # teaches the bot to seek high-conviction entries
-                reward_trade = self.win_weight * trade_pnl * 3
+                # Asymmetric: wins rewarded 2x more than losses punished
+                reward_trade = self.win_weight * trade_pnl * 1.5
 
             self.in_trade   = False
             self.entry_price = None

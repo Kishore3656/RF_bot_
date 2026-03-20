@@ -84,35 +84,34 @@ class TradingAgent:
         # SB3 was designed to train on multiple environments
         # in parallel. DummyVecEnv runs just one — but
         # satisfies SB3's requirement for the wrapper.
+        max_pos = self.config.get("ai", {}).get("max_position_pct", 0.30)
         self.env = DummyVecEnv([
             lambda: TradingEnvironment(
                 df              = normalized_df,
                 config          = self.config,
                 raw_prices      = raw_prices,
-                initial_capital = self.config["broker"]["initial_capital"]
+                initial_capital = self.config["broker"]["initial_capital"],
+                max_position    = max_pos,
             )
         ])
 
         # ── Step 2: Define the neural network architecture
-        # net_arch = [256, 256, 128]:
-        #   Input layer (34 neurons — observation size with new features)
-        #   Hidden layer 1: 256 neurons
-        #   Hidden layer 2: 256 neurons
-        #   Hidden layer 3: 128 neurons  (extra depth for pattern recognition)
-        #   Output layer: 4 neurons (hold/long/short/close)
+        # [128, 128]: two hidden layers with 128 neurons each.
+        # Larger than [64, 64] — better capacity for 35 input features.
         policy_kwargs = dict(
-            net_arch = [64, 64]
+            net_arch = [128, 128]
         )
 
-        # ── Step 3: Create the model ───────────────
+        # ── Step 3: Read seed from config ──────────
+        seed = self.config.get("ai", {}).get("random_seed", None)
+
+        # ── Step 4: Create the model ───────────────
         AlgorithmClass = self.ALGORITHMS[self.algorithm]
 
-        # PPO and A2C use "MlpPolicy" (Multi-Layer Perceptron)
-        # = a standard feedforward neural network
-        # Perfect for our flat observation vector
-        # entropy_coef=0.01 maintains exploration, prevents premature convergence
-        # n_steps=2048 accumulates more experience per update
-        # batch_size=64, n_epochs=10 are PPO standard best practices
+        # n_steps=2048: collect 2048 steps before each update.
+        # Larger buffer → lower-variance gradient estimates → more stable learning.
+        # batch_size=64, n_epochs=10: standard PPO best practices.
+        # seed=seed: fixed seed makes weight init and batch shuffling reproducible.
         self.model = AlgorithmClass(
             policy          = "MlpPolicy",
             env             = self.env,
@@ -121,11 +120,12 @@ class TradingAgent:
             verbose         = 0,
             device          = "cpu",   # MlpPolicy runs faster on CPU than GPU
             tensorboard_log = "logs/tensorboard/",
+            seed            = seed,
             **({
                 "ent_coef":   0.01,   # exploration bonus (PPO/A2C only)
-                "n_steps":    512,
-                "batch_size": 32,
-                "n_epochs":   5,
+                "n_steps":    2048,   # larger rollout buffer = more stable updates
+                "batch_size": 64,
+                "n_epochs":   10,
             } if self.algorithm in ("PPO", "A2C") else {}),
         )
 
@@ -311,11 +311,15 @@ class TradingAgent:
         self,
         normalized_df: pd.DataFrame,
         raw_prices:    pd.Series,
-        render:        bool = False
+        render:        bool = False,
+        use_risk:      bool = True,
     ) -> dict:
         """
         Run one complete episode with the TRAINED agent.
         Used for evaluation after training.
+
+        use_risk=True applies StopLossManager to enforce
+        SL/TP on every step (mirrors live paper trading).
 
         Returns performance summary.
         """
@@ -324,20 +328,44 @@ class TradingAgent:
                 "❌ No model. Train or load first."
             )
 
+        from risk.stop_loss import StopLossManager
+
+        max_pos = self.config.get("ai", {}).get("max_position_pct", 0.30)
+
         # Create fresh environment for evaluation
         eval_env = TradingEnvironment(
             df              = normalized_df,
             config          = self.config,
             raw_prices      = raw_prices,
-            initial_capital = self.config["broker"]["initial_capital"]
+            initial_capital = self.config["broker"]["initial_capital"],
+            max_position    = max_pos,
         )
 
         obs, _       = eval_env.reset()
         total_reward = 0
         steps        = 0
+        sl           = StopLossManager(self.config) if use_risk else None
 
         while True:
-            action  = self.predict(obs)
+            action = self.predict(obs)
+
+            # ── Risk enforcement: SL/TP override ──────
+            if use_risk and sl:
+                current_price = float(eval_env.raw_prices[eval_env.current_step])
+
+                if eval_env.position != 0:
+                    sl_result = sl.check(current_price)
+                    if sl_result["should_exit"]:
+                        action = 3   # force close
+
+                # Track open/close for SL manager state
+                if action in (1, 2) and eval_env.position == 0:
+                    direction = "long" if action == 1 else "short"
+                    sl.open_trade(current_price, direction)
+                elif action == 3 and eval_env.position != 0:
+                    sl.close_trade()
+            # ──────────────────────────────────────────
+
             obs, reward, terminated, truncated, info = eval_env.step(action)
             total_reward += reward
             steps        += 1
